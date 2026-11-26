@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-import html
+from html import escape as escape_html
 import re
 import unicodedata
 from collections import Counter, defaultdict
@@ -626,7 +626,13 @@ def catalog_match(resource: dict[str, Any], catalogs: list[dict[str, Any]]) -> s
     if not matches:
         return "Sin coincidencia"
     identities = {
-        (norm(row["description"]), norm(row["unit"]), round(row["unit_cost"], 4))
+        (
+            norm(row["description"]),
+            norm(row["unit"]),
+            round(number(row["unit_cost"]), 4)
+            if number(row["unit_cost"]) is not None
+            else None,
+        )
         for row in matches
     }
     if len(identities) > 1:
@@ -635,8 +641,16 @@ def catalog_match(resource: dict[str, Any], catalogs: list[dict[str, Any]]) -> s
     issues = []
     if norm(candidate["unit"]) != norm(resource["unit"]):
         issues.append("unidad distinta")
-    if abs(candidate["unit_cost"] - resource["unit_cost"]) > max(
-        1, abs(resource["unit_cost"]) * .01
+    catalog_cost = number(candidate["unit_cost"])
+    apu_cost = number(resource["unit_cost"])
+    if catalog_cost is None:
+        issues.append("costo catálogo faltante")
+    if apu_cost is None:
+        issues.append("costo APU faltante")
+    if (
+        catalog_cost is not None
+        and apu_cost is not None
+        and abs(catalog_cost - apu_cost) > max(1, abs(apu_cost) * .01)
     ):
         issues.append("precio distinto")
     return ", ".join(issues) if issues else "Coincide"
@@ -721,9 +735,9 @@ def create_html_report(
     cost_m2 = fmt_money(cost_per_m2) if cost_per_m2 is not None else "No disponible"
     table_budget = budget.to_html(index=False, classes="data", border=0)
     table_resources = resources.to_html(index=False, classes="data", border=0)
-    html = f"""<!doctype html>
+    report_html = f"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Reporte de presupuesto | {html.escape(project)}</title>
+<title>Reporte de presupuesto | {escape_html(project)}</title>
 <style>
 body{{font-family:Arial,sans-serif;background:#f3f6fa;color:#17283d;margin:0}}
 header{{background:#12253f;color:white;padding:28px 5vw}}header h1{{margin:0}}
@@ -737,7 +751,7 @@ table.data th{{background:#12253f;color:white;text-align:left;position:sticky;to
 table.data th,table.data td{{padding:8px;border-bottom:1px solid #e1e7ef}}
 footer{{color:#64748b;padding:24px 5vw;font-size:12px}}
 </style></head>
-<body><header><h1>Reporte de análisis presupuestario</h1><p>{html.escape(project)} · Generado desde el libro Excel cargado</p></header>
+<body><header><h1>Reporte de análisis presupuestario</h1><p>{escape_html(project)} · Generado desde el libro Excel cargado</p></header>
 <main><section class="kpis">
 <div class="card"><small>Costo directo presupuestado</small><strong>{fmt_money(budget_total)}</strong></div>
 <div class="card"><small>Gastos generales</small><strong>{fmt_money(overhead)}</strong></div>
@@ -749,7 +763,7 @@ footer{{color:#64748b;padding:24px 5vw;font-size:12px}}
 <section class="panel"><h2>Recursos calculados</h2><div class="table-wrap">{table_resources}</div></section>
 </main><footer>Los recursos se calculan como cantidad de partida × rendimiento × factor de pérdida, según las fórmulas del libro. Las unidades se mantienen separadas. Verifique las alertas del dashboard antes de usar este reporte como base contractual.</footer>
 </body></html>"""
-    return html.encode("utf-8")
+    return report_html.encode("utf-8")
 
 
 st.markdown(
@@ -806,7 +820,7 @@ for resource in parsed["resources"]:
     loss_factor = resource["loss_factor"]
     resource_quantity = (
         budget_item["quantity"] * resource["yield"] * loss_factor
-        if loss_factor is not None
+        if resource["yield"] is not None and loss_factor is not None
         else None
     )
     resource_records.append(
@@ -825,7 +839,7 @@ for resource in parsed["resources"]:
             "Costo unitario": resource["unit_cost"],
             "Costo calculado": (
                 resource_quantity * resource["unit_cost"]
-                if resource_quantity is not None
+                if resource_quantity is not None and resource["unit_cost"] is not None
                 else None
             ),
             "Catálogo": resource["catalog_status"],
